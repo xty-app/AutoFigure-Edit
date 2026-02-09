@@ -3,7 +3,8 @@ Paper Method 到 SVG 图标替换完整流程 (Label 模式增强版 + Box合并
 
 支持的 API Provider：
 - openrouter: OpenRouter API (https://openrouter.ai/api/v1)
-- bianxie: Bianxie API (https://api.bianxie.ai/v1) - 使用 OpenAI SDK
+- svip.xty.app: OpenAI-compatible gateway (https://svip-hk.xty.app/v1) - 使用 OpenAI SDK
+- api.xty.app: OpenAI-compatible gateway (https://hk.xty.app/v1) - 使用 OpenAI SDK
 
 占位符模式 (--placeholder_mode):
 - none: 无特殊样式（默认黑色边框）
@@ -36,29 +37,29 @@ Box合并功能 (--merge_threshold):
 5. 根据序号匹配，将透明图标替换到 SVG 占位符中 -> final.svg
 
 使用方法：
-    # 使用 Bianxie + label 模式（默认）
-    python iou_autofigure.py --method_file paper_method.txt --output_dir ./output --api_key "your-key"
+    # 使用 svip.xty.app + label 模式（默认）
+    python autofigure2.py --method_file paper_method.txt --output_dir ./output --api_key "your-key"
 
     # 使用 OpenRouter
-    python iou_autofigure.py --method_file paper_method.txt --output_dir ./output --api_key "sk-or-v1-xxx" --provider openrouter
+    python autofigure2.py --method_file paper_method.txt --output_dir ./output --api_key "sk-or-v1-xxx" --provider openrouter
 
     # 使用 box 模式（传入坐标）
-    python iou_autofigure.py --method_file paper_method.txt --output_dir ./output --placeholder_mode box
+    python autofigure2.py --method_file paper_method.txt --output_dir ./output --placeholder_mode box
 
     # 使用多个 SAM3 prompts 检测
-    python iou_autofigure.py --method_file paper_method.txt --output_dir ./output --sam_prompt "icon,diagram,arrow"
+    python autofigure2.py --method_file paper_method.txt --output_dir ./output --sam_prompt "icon,diagram,arrow"
 
     # 跳过步骤 4.6 优化（设置迭代次数为 0）
-    python iou_autofigure.py --method_file paper_method.txt --output_dir ./output --optimize_iterations 0
+    python autofigure2.py --method_file paper_method.txt --output_dir ./output --optimize_iterations 0
 
     # 设置步骤 4.6 优化迭代 3 次
-    python iou_autofigure.py --method_file paper_method.txt --output_dir ./output --optimize_iterations 3
+    python autofigure2.py --method_file paper_method.txt --output_dir ./output --optimize_iterations 3
 
     # 自定义 box 合并阈值（0.8）
-    python iou_autofigure.py --method_file paper_method.txt --output_dir ./output --merge_threshold 0.8
+    python autofigure2.py --method_file paper_method.txt --output_dir ./output --merge_threshold 0.8
 
     # 禁用 box 合并
-    python iou_autofigure.py --method_file paper_method.txt --output_dir ./output --merge_threshold 0
+    python autofigure2.py --method_file paper_method.txt --output_dir ./output --merge_threshold 0
 """
 
 from __future__ import annotations
@@ -92,14 +93,19 @@ PROVIDER_CONFIGS = {
         "default_image_model": "google/gemini-3-pro-image-preview",
         "default_svg_model": "google/gemini-3-pro-preview",
     },
-    "bianxie": {
-        "base_url": "https://api.bianxie.ai/v1",
+    "svip.xty.app": {
+        "base_url": "https://svip-hk.xty.app/v1",
+        "default_image_model": "gemini-3-pro-image-preview",
+        "default_svg_model": "gemini-3-pro-preview",
+    },
+    "api.xty.app": {
+        "base_url": "https://hk.xty.app/v1",
         "default_image_model": "gemini-3-pro-image-preview",
         "default_svg_model": "gemini-3-pro-preview",
     },
 }
 
-ProviderType = Literal["openrouter", "bianxie"]
+ProviderType = Literal["openrouter", "svip.xty.app", "api.xty.app"]
 PlaceholderMode = Literal["none", "box", "label"]
 
 # SAM3 API config
@@ -141,10 +147,11 @@ def call_llm_text(
     Returns:
         LLM 响应文本
     """
-    if provider == "bianxie":
-        return _call_bianxie_text(prompt, api_key, model, base_url, max_tokens, temperature)
-    else:  # openrouter
+    if provider == "openrouter":
         return _call_openrouter_text(prompt, api_key, model, base_url, max_tokens, temperature)
+    return _call_openai_compatible_text(
+        prompt, api_key, model, base_url, provider_label=provider, max_tokens=max_tokens, temperature=temperature
+    )
 
 
 def call_llm_multimodal(
@@ -171,10 +178,11 @@ def call_llm_multimodal(
     Returns:
         LLM 响应文本
     """
-    if provider == "bianxie":
-        return _call_bianxie_multimodal(contents, api_key, model, base_url, max_tokens, temperature)
-    else:  # openrouter
+    if provider == "openrouter":
         return _call_openrouter_multimodal(contents, api_key, model, base_url, max_tokens, temperature)
+    return _call_openai_compatible_multimodal(
+        contents, api_key, model, base_url, provider_label=provider, max_tokens=max_tokens, temperature=temperature
+    )
 
 
 def call_llm_image_generation(
@@ -198,25 +206,27 @@ def call_llm_image_generation(
     Returns:
         生成的 PIL Image，失败返回 None
     """
-    if provider == "bianxie":
-        return _call_bianxie_image_generation(prompt, api_key, model, base_url, reference_image)
-    else:  # openrouter
+    if provider == "openrouter":
         return _call_openrouter_image_generation(prompt, api_key, model, base_url, reference_image)
+    return _call_openai_compatible_image_generation(
+        prompt, api_key, model, base_url, provider_label=provider, reference_image=reference_image
+    )
 
 
 # ============================================================================
-# Bianxie Provider 实现 (使用 OpenAI SDK)
+# OpenAI-compatible Provider 实现 (使用 OpenAI SDK)
 # ============================================================================
 
-def _call_bianxie_text(
+def _call_openai_compatible_text(
     prompt: str,
     api_key: str,
     model: str,
     base_url: str,
+    provider_label: str,
     max_tokens: int = 16000,
     temperature: float = 0.7,
 ) -> Optional[str]:
-    """使用 OpenAI SDK 调用 Bianxie 文本接口"""
+    """使用 OpenAI SDK 调用 OpenAI-compatible 文本接口"""
     try:
         from openai import OpenAI
 
@@ -231,19 +241,20 @@ def _call_bianxie_text(
 
         return completion.choices[0].message.content if completion and completion.choices else None
     except Exception as e:
-        print(f"[Bianxie] API 调用失败: {e}")
+        print(f"[{provider_label}] API 调用失败: {e}")
         raise
 
 
-def _call_bianxie_multimodal(
+def _call_openai_compatible_multimodal(
     contents: List[Any],
     api_key: str,
     model: str,
     base_url: str,
+    provider_label: str,
     max_tokens: int = 16000,
     temperature: float = 0.7,
 ) -> Optional[str]:
-    """使用 OpenAI SDK 调用 Bianxie 多模态接口"""
+    """使用 OpenAI SDK 调用 OpenAI-compatible 多模态接口"""
     try:
         from openai import OpenAI
 
@@ -271,18 +282,19 @@ def _call_bianxie_multimodal(
 
         return completion.choices[0].message.content if completion and completion.choices else None
     except Exception as e:
-        print(f"[Bianxie] 多模态 API 调用失败: {e}")
+        print(f"[{provider_label}] 多模态 API 调用失败: {e}")
         raise
 
 
-def _call_bianxie_image_generation(
+def _call_openai_compatible_image_generation(
     prompt: str,
     api_key: str,
     model: str,
     base_url: str,
+    provider_label: str,
     reference_image: Optional[Image.Image] = None,
 ) -> Optional[Image.Image]:
-    """使用 OpenAI SDK 调用 Bianxie 图像生成接口"""
+    """使用 OpenAI SDK 调用 OpenAI-compatible 图像生成接口"""
     try:
         from openai import OpenAI
 
@@ -310,7 +322,7 @@ def _call_bianxie_image_generation(
         if not content:
             return None
 
-        # Bianxie 返回 Markdown 格式的图片: ![text](data:image/png;base64,...)
+        # Some providers return Markdown/data-url: ![...](data:image/png;base64,...)
         pattern = r'data:image/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)'
         match = re.search(pattern, content)
 
@@ -321,7 +333,7 @@ def _call_bianxie_image_generation(
 
         return None
     except Exception as e:
-        print(f"[Bianxie] 图像生成 API 调用失败: {e}")
+        print(f"[{provider_label}] 图像生成 API 调用失败: {e}")
         raise
 
 
@@ -1037,7 +1049,7 @@ def segment_with_sam3(
     text_prompts: str = "icon",
     min_score: float = 0.5,
     merge_threshold: float = 0.9,
-    sam_backend: Literal["local", "fal", "roboflow", "api"] = "local",
+    sam_backend: Literal["local", "fal", "roboflow", "api"] = "roboflow",
     sam_api_key: Optional[str] = None,
     sam_max_masks: int = 32,
 ) -> tuple[str, str, list]:
@@ -2209,12 +2221,12 @@ def method_to_svg(
     output_dir: str = "./output",
     api_key: str = None,
     base_url: str = None,
-    provider: ProviderType = "bianxie",
+    provider: ProviderType = "svip.xty.app",
     image_gen_model: str = None,
     svg_gen_model: str = None,
     sam_prompts: str = "icon",
     min_score: float = 0.5,
-    sam_backend: Literal["local", "fal", "roboflow", "api"] = "local",
+    sam_backend: Literal["local", "fal", "roboflow", "api"] = "roboflow",
     sam_api_key: Optional[str] = None,
     sam_max_masks: int = 32,
     rmbg_model_path: Optional[str] = None,
@@ -2496,9 +2508,9 @@ if __name__ == "__main__":
     # Provider 参数
     parser.add_argument(
         "--provider",
-        choices=["openrouter", "bianxie"],
-        default="bianxie",
-        help="API 提供商（默认: bianxie）"
+        choices=["openrouter", "svip.xty.app", "api.xty.app"],
+        default="svip.xty.app",
+        help="API 提供商（默认: svip.xty.app）"
     )
 
     # API 参数
@@ -2523,7 +2535,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--sam_backend",
         choices=["local", "fal", "roboflow", "api"],
-        default="local",
+        default="roboflow",
         help="SAM3 后端：local(本地部署)/fal(fal.ai)/roboflow(Roboflow)/api(旧别名=fal)",
     )
     parser.add_argument("--sam_api_key", default=None, help="SAM3 API Key（默认使用 FAL_KEY）")

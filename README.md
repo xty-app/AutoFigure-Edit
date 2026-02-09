@@ -122,7 +122,7 @@ pip install -e .
 python autofigure2.py \
   --method_file paper.txt \
   --output_dir outputs/demo \
-  --provider bianxie \
+  --provider svip.xty.app \
   --api_key YOUR_KEY
 ```
 
@@ -144,7 +144,7 @@ AutoFigure-edit provides a visual web interface designed for seamless generation
 <img src="img/demo_start.png" width="100%" alt="Configuration Page" style="border: 1px solid #ddd; border-radius: 8px; margin-bottom: 10px;"/>
 
 On the start page, paste your paper's method text on the left. On the right, configure your generation settings:
-*   **Provider:** Select your LLM provider (OpenRouter or Bianxie).
+*   **Provider:** Select your LLM provider (OpenRouter / svip.xty.app / api.xty.app).
 *   **Optimize:** Set SVG template refinement iterations (recommend `0` for standard use).
 *   **Reference Image:** Upload a target image to enable style transfer.
 *   **SAM3 Backend:** Choose local SAM3 or the fal.ai API (API key optional).
@@ -181,7 +181,7 @@ export FAL_KEY="your-fal-key"
 python autofigure2.py \
   --method_file paper.txt \
   --output_dir outputs/demo \
-  --provider bianxie \
+  --provider svip.xty.app \
   --api_key YOUR_KEY \
   --sam_backend fal
 ```
@@ -193,7 +193,7 @@ export ROBOFLOW_API_KEY="your-roboflow-key"
 python autofigure2.py \
   --method_file paper.txt \
   --output_dir outputs/demo \
-  --provider bianxie \
+  --provider svip.xty.app \
   --api_key YOUR_KEY \
   --sam_backend roboflow
 ```
@@ -209,11 +209,12 @@ Optional CLI flags (API):
 | Provider | Base URL | Notes |
 |----------|----------|------|
 | **OpenRouter** | `openrouter.ai/api/v1` | Supports Gemini/Claude/others |
-| **Bianxie** | `api.bianxie.ai/v1` | OpenAI-compatible API |
+| **svip.xty.app** | `svip-hk.xty.app/v1` | OpenAI-compatible gateway |
+| **api.xty.app** | `hk.xty.app/v1` | OpenAI-compatible gateway |
 
 Common CLI flags:
 
-- `--provider` (openrouter | bianxie)
+- `--provider` (openrouter | svip.xty.app | api.xty.app)
 - `--image_model`, `--svg_model`
 - `--sam_prompt` (comma-separated prompts)
 - `--sam_backend` (local | fal | roboflow | api)

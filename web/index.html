@@ -31,8 +31,9 @@
           <div class="field-group">
             <label class="field-label" for="provider">Provider</label>
             <select id="provider" class="input">
-              <option value="bianxie" selected>Bianxie</option>
               <option value="openrouter">OpenRouter</option>
+              <option value="svip.xty.app" selected>svip.xty.app</option>
+              <option value="api.xty.app">api.xty.app</option>
             </select>
           </div>
 
@@ -58,20 +59,20 @@
                 <img id="referencePreview" class="upload-preview" alt="Reference preview" />
                 <div id="referenceStatus" class="hint"></div>
               </div>
-              <input
-                id="referenceImage"
-                class="input"
-                value="refer_figure/2.png"
-              />
+	              <input
+	                id="referenceImage"
+	                class="input"
+	                value=""
+	              />
               <div class="hint">Upload overrides the path above.</div>
             </div>
 
             <div class="field-group">
               <label class="field-label" for="samBackend">SAM3 Backend</label>
               <select id="samBackend" class="input">
-                <option value="local" selected>Local (SAM3)</option>
+                <option value="local">Local (SAM3)</option>
                 <option value="fal">fal.ai API</option>
-                <option value="roboflow">Roboflow API</option>
+                <option value="roboflow" selected>Roboflow API</option>
               </select>
               <div class="hint">API mode uses FAL_KEY or ROBOFLOW_API_KEY if no key is provided below.</div>
             </div>

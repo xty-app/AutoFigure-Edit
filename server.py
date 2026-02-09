@@ -71,13 +71,13 @@ class Job:
 
 class RunRequest(BaseModel):
     method_text: str = Field(..., min_length=1)
-    provider: str = "bianxie"
+    provider: str = "svip.xty.app"
     api_key: Optional[str] = None
     base_url: Optional[str] = None
     image_model: Optional[str] = None
     svg_model: Optional[str] = None
     sam_prompt: Optional[str] = None
-    sam_backend: Optional[str] = None
+    sam_backend: str = "roboflow"
     sam_api_key: Optional[str] = None
     sam_max_masks: Optional[int] = None
     placeholder_mode: Optional[str] = None

@@ -4,7 +4,7 @@
 
 # AutoFigure-edit: Generating and Editing Publication-Ready Scientific Illustrations [ICLR 2026]
 <p align="center">
-  <a href="README.md">English</a> | <a href="README_zh.md">中文</a>
+  <a href="README.md">English</a> | <a href="README_ZH.md">中文</a>
 </p>
 
 [![ICLR 2026](https://img.shields.io/badge/ICLR-2026-blue?style=for-the-badge&logo=openreview)](https://openreview.net/forum?id=5N3z9JQJKq)
@@ -119,7 +119,7 @@ pip install -e .
 python autofigure2.py \
   --method_file paper.txt \
   --output_dir outputs/demo \
-  --provider bianxie \
+  --provider svip.xty.app \
   --api_key YOUR_KEY
 ```
 
@@ -141,7 +141,7 @@ AutoFigure-edit 提供了一个可视化的 Web 界面，旨在实现无缝的�
 <img src="img/demo_start.png" width="100%" alt="配置页面" style="border: 1px solid #ddd; border-radius: 8px; margin-bottom: 10px;"/>
 
 在起始页面左侧粘贴论文的方法文本。在右侧配置生成选项：
-*   **供应商 (Provider):** 选择 LLM 供应商（OpenRouter 或 Bianxie）。
+*   **供应商 (Provider):** 选择 LLM 供应商（OpenRouter / svip.xty.app / api.xty.app）。
 *   **优化 (Optimize):** 设置 SVG 模板的优化迭代次数（日常使用建议设为 `0`）。
 *   **参考图片 (Reference Image):** 上传目标图片以启用风格迁移功能。
 *   **SAM3 后端:** 选择本地 SAM3 或 fal.ai API（API Key 可选）。
@@ -175,7 +175,7 @@ export FAL_KEY="your-fal-key"
 python autofigure2.py \
   --method_file paper.txt \
   --output_dir outputs/demo \
-  --provider bianxie \
+  --provider svip.xty.app \
   --api_key YOUR_KEY \
   --sam_backend fal
 ```
@@ -187,7 +187,7 @@ export ROBOFLOW_API_KEY="your-roboflow-key"
 python autofigure2.py \
   --method_file paper.txt \
   --output_dir outputs/demo \
-  --provider bianxie \
+  --provider svip.xty.app \
   --api_key YOUR_KEY \
   --sam_backend roboflow
 ```
@@ -203,11 +203,12 @@ python autofigure2.py \
 | 供应商 | Base URL | 备注 |
 |----------|----------|------|
 | **OpenRouter** | `openrouter.ai/api/v1` | 支持 Gemini/Claude/其他模型 |
-| **Bianxie** | `api.bianxie.ai/v1` | 兼容 OpenAI 接口 |
+| **svip.xty.app** | `svip-hk.xty.app/v1` | OpenAI-compatible gateway |
+| **api.xty.app** | `hk.xty.app/v1` | OpenAI-compatible gateway |
 
 常用 CLI 参数：
 
-- `--provider` (openrouter | bianxie)
+- `--provider` (openrouter | svip.xty.app | api.xty.app)
 - `--image_model`, `--svg_model`
 - `--sam_prompt` (逗号分隔的提示词)
 - `--sam_backend` (local | fal | roboflow | api)
