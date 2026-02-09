@@ -5,7 +5,11 @@
 ## 构建
 
 ```bash
-docker build -t autofigure-edit:api .
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t registry.cn-hongkong.aliyuncs.com/yinqf/autofigure-edit:1.0.0 \
+  . \
+  --push
 ```
 
 ## 运行（Web UI）
@@ -13,7 +17,23 @@ docker build -t autofigure-edit:api .
 最简单方式（容器内输出会写到容器文件系统，退出就没了）：
 
 ```bash
-docker run --rm -p 8000:8000 autofigure-edit:api
+docker stop autofigure-edit
+docker rm autofigure-edit
+docker rmi registry.cn-hongkong.aliyuncs.com/yinqf/autofigure-edit:1.0.0
+docker run -d \
+  --name autofigure-edit \
+  --restart always \
+  -p 6091:8000 \
+  -m 2g \
+  -e TZ=Asia/Shanghai \
+  --log-driver=json-file \
+  --log-opt max-size=1024m \
+  --log-opt max-file=1 \
+  registry.cn-hongkong.aliyuncs.com/yinqf/autofigure-edit:1.0.0
+
+docker logs -f --tail=100 autofigure-edit
+
+
 ```
 
 建议挂载本地目录，保留输出与上传文件：
