@@ -260,7 +260,12 @@
       artifactPanel.classList.toggle("open");
     });
 
+    let logAutoOpen = true;
+    let hasLogs = Boolean(logBody && logBody.textContent.trim());
+
     logToggle.addEventListener("click", () => {
+      // If the user manually toggles the panel, stop auto-opening it.
+      logAutoOpen = false;
       logPanel.classList.toggle("open");
     });
 
@@ -344,6 +349,12 @@
     eventSource.addEventListener("log", (event) => {
       const data = JSON.parse(event.data);
       appendLogLine(logBody, data);
+      if (!hasLogs) {
+        hasLogs = true;
+        if (logAutoOpen) {
+          logPanel.classList.add("open");
+        }
+      }
     });
 
     eventSource.onerror = () => {

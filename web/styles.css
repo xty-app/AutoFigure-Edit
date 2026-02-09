@@ -366,7 +366,7 @@ select {
   position: fixed;
   left: 24px;
   bottom: 24px;
-  width: 420px;
+  width: min(760px, calc(100vw - 48px));
   max-height: 40vh;
   background: var(--panel);
   border: 1px solid var(--line);

@@ -72,6 +72,8 @@ import os
 import re
 import shutil
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Literal
 
@@ -1026,6 +1028,7 @@ def _call_sam3_roboflow_api(
     prompt: str,
     api_key: str,
     min_score: float,
+    max_retries: int = 3,
 ) -> dict:
     payload = {
         "image": {"type": "base64", "value": image_base64},
@@ -1034,13 +1037,45 @@ def _call_sam3_roboflow_api(
         "output_prob_thresh": min_score,
     }
     url = f"{SAM3_ROBOFLOW_API_URL}?api_key={api_key}"
-    response = requests.post(url, json=payload, timeout=SAM3_API_TIMEOUT)
-    if response.status_code != 200:
-        raise Exception(f"SAM3 Roboflow API 错误: {response.status_code} - {response.text[:500]}")
-    result = response.json()
-    if isinstance(result, dict) and "error" in result:
-        raise Exception(f"SAM3 Roboflow API 错误: {result.get('error')}")
-    return result
+    last_err: Optional[Exception] = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = requests.post(url, json=payload, timeout=SAM3_API_TIMEOUT)
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, dict) and "error" in result:
+                    raise Exception(f"SAM3 Roboflow API 错误: {result.get('error')}")
+                return result
+
+            # Retry on transient statuses.
+            if response.status_code in (408, 429) or 500 <= response.status_code <= 599:
+                last_err = Exception(
+                    f"SAM3 Roboflow API 错误: {response.status_code} - {response.text[:500]}"
+                )
+                if attempt < max_retries:
+                    print(f"    警告: Roboflow 暂时不可用，重试 {attempt}/{max_retries}...")
+                    time.sleep(0.8 * attempt)
+                    continue
+                raise last_err
+
+            raise Exception(f"SAM3 Roboflow API 错误: {response.status_code} - {response.text[:500]}")
+        except requests.exceptions.RequestException as e:
+            last_err = e
+            if attempt < max_retries:
+                print(f"    警告: Roboflow 网络异常，重试 {attempt}/{max_retries}...")
+                time.sleep(0.8 * attempt)
+                continue
+            raise Exception(f"SAM3 Roboflow API 网络错误: {e}") from e
+        except Exception as e:
+            last_err = e
+            if attempt < max_retries:
+                # JSON parse errors etc. can be transient.
+                print(f"    警告: Roboflow 调用异常，重试 {attempt}/{max_retries}...")
+                time.sleep(0.8 * attempt)
+                continue
+            raise
+
+    raise last_err if last_err else Exception("SAM3 Roboflow API 调用失败（未知错误）")
 
 
 def segment_with_sam3(
@@ -1303,6 +1338,144 @@ def segment_with_sam3(
 # 步骤三：裁切 + RMBG2 去背景
 # ============================================================================
 
+def _get_chat_completions_url(base_url: str) -> str:
+    """Normalize a base_url (usually ends with /v1) into /chat/completions."""
+    if base_url.endswith("/chat/completions"):
+        return base_url
+    if base_url.endswith("/"):
+        return base_url + "chat/completions"
+    return base_url + "/chat/completions"
+
+
+def _pil_to_data_url_png(image: Image.Image) -> str:
+    """Encode a PIL image into a PNG data URL."""
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{b64}"
+
+
+def _extract_first_string_content(result_json: dict) -> Optional[str]:
+    """
+    Extract choices[0].message.content as a string from an OpenAI-compatible response.
+    Some providers may return content as array; we only support the common string case here.
+    """
+    try:
+        choices = result_json.get("choices") or []
+        if not choices:
+            return None
+        msg = (choices[0] or {}).get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        return None
+    except Exception:
+        return None
+
+
+def _content_to_image(content: str, timeout: int = 300) -> Image.Image:
+    """Parse a content string into an image. Supports URL and data URL."""
+    if not content:
+        raise ValueError("remove-bg 返回内容为空")
+
+    # data:image/...;base64,...
+    if content.startswith("data:image/"):
+        m = re.search(r"data:image/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)", content)
+        if not m:
+            raise ValueError("remove-bg 返回了 data:image 但无法解析 base64")
+        img_bytes = base64.b64decode(m.group(2))
+        return Image.open(io.BytesIO(img_bytes))
+
+    # plain URL
+    if content.startswith("http://") or content.startswith("https://"):
+        resp = requests.get(content, timeout=timeout)
+        if resp.status_code != 200:
+            raise Exception(f"下载 remove-bg 输出失败: {resp.status_code} - {resp.text[:300]}")
+        return Image.open(io.BytesIO(resp.content))
+
+    raise ValueError(f"remove-bg 返回了未知格式的内容: {content[:120]}")
+
+
+class XtyRemoveBgApiRemover:
+    """调用 XTY remove-bg API 去背景（复用同一 base_url + api_key）。"""
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        provider: ProviderType,
+        output_dir: Path | str | None = None,
+        timeout: int = 300,
+        max_retries: int = 3,
+        prompt_text: str = "remove background",
+    ):
+        self.api_key = api_key
+        self.base_url = base_url
+        self.provider = provider
+        self.output_dir = Path(output_dir) if output_dir else Path("./output/icons")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.prompt_text = prompt_text
+
+        self.api_url = _get_chat_completions_url(base_url)
+
+    def _headers(self) -> dict:
+        if self.provider == "openrouter":
+            # OpenRouter requires special headers; but remove-bg is not an OpenRouter model.
+            # We keep this for completeness if user points base_url to an OpenRouter-like gateway.
+            return _get_openrouter_headers(self.api_key)
+        return {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
+
+    def remove_background(self, image: Image.Image, output_name: str) -> str:
+        image_url = _pil_to_data_url_png(image)
+
+        payload = {
+            "model": "remove-bg",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": self.prompt_text},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ],
+                }
+            ],
+            "stream": False,
+        }
+
+        last_err: Optional[Exception] = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                resp = requests.post(
+                    self.api_url, headers=self._headers(), json=payload, timeout=self.timeout
+                )
+                if resp.status_code != 200:
+                    raise Exception(f"remove-bg API 错误: {resp.status_code} - {resp.text[:500]}")
+                result_json = resp.json()
+
+                if "error" in result_json:
+                    err = result_json.get("error")
+                    raise Exception(f"remove-bg API 返回 error: {err}")
+
+                content = _extract_first_string_content(result_json)
+                if not content:
+                    raise Exception(f"remove-bg 响应无 content: {str(result_json)[:500]}")
+
+                out_img = _content_to_image(content, timeout=self.timeout)
+                out_path = self.output_dir / f"{output_name}_nobg.png"
+                out_img.save(out_path, format="PNG")
+                return str(out_path)
+            except Exception as e:
+                last_err = e
+                if attempt < self.max_retries:
+                    time.sleep(0.8 * attempt)
+                else:
+                    raise
+
+        raise last_err if last_err else Exception("remove-bg 失败（未知错误）")
+
+
 class BriaRMBG2Remover:
     """使用 BRIA-RMBG 2.0 模型进行高质量背景抠图"""
 
@@ -1320,6 +1493,8 @@ class BriaRMBG2Remover:
                 str(self.model_path), trust_remote_code=True,
             ).eval().to(device)
         else:
+            # Note: briaai/RMBG-2.0 is a gated HF repo and often fails without auth.
+            # Prefer XTY remove-bg API by default; keep this path only for users who handle HF auth.
             print("从 HuggingFace 加载 RMBG-2.0 模型...")
             self.model = AutoModelForImageSegmentation.from_pretrained(
                 "briaai/RMBG-2.0", trust_remote_code=True,
@@ -1356,6 +1531,10 @@ def crop_and_remove_background(
     boxlib_path: str,
     output_dir: str,
     rmbg_model_path: Optional[str] = None,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    provider: Optional[ProviderType] = None,
+    rmbg_workers: int = 8,
 ) -> list[dict]:
     """
     根据 boxlib.json 裁切图片并使用 RMBG2 去背景
@@ -1380,34 +1559,103 @@ def crop_and_remove_background(
         print("警告: 没有检测到有效的 box")
         return []
 
-    remover = BriaRMBG2Remover(model_path=rmbg_model_path, output_dir=icons_dir)
+    # Default: use XTY remove-bg API with the SAME base_url + api_key as figure generation.
+    # Fallback: if user provides a local RMBG model path, use local remover.
+    if rmbg_model_path:
+        remover: Any = BriaRMBG2Remover(model_path=rmbg_model_path, output_dir=icons_dir)
+        use_concurrency = False  # local model is heavy; keep it single-threaded by default
+    else:
+        if not api_key or not base_url or not provider:
+            raise ValueError("使用 remove-bg API 需要 api_key/base_url/provider（请从 method_to_svg 传入）")
+        if provider == "openrouter":
+            raise ValueError("OpenRouter provider 不支持 remove-bg 模型；请使用 svip.xty.app 或 api.xty.app")
+        print(f"使用 XTY remove-bg API: {base_url} (复用同一 API Key)")
+        remover = XtyRemoveBgApiRemover(
+            api_key=api_key, base_url=base_url, provider=provider, output_dir=icons_dir
+        )
+        use_concurrency = True
 
-    icon_infos = []
+    jobs: list[dict] = []
     for box_info in boxes:
         box_id = box_info["id"]
         label = box_info.get("label", f"<AF>{box_id + 1:02d}")
-        # 将 <AF>01 转换为 AF01 用于文件名
         label_clean = label.replace("<", "").replace(">", "")
 
         x1, y1, x2, y2 = box_info["x1"], box_info["y1"], box_info["x2"], box_info["y2"]
-
         cropped = image.crop((x1, y1, x2, y2))
         crop_path = icons_dir / f"icon_{label_clean}.png"
         cropped.save(crop_path)
 
-        nobg_path = remover.remove_background(cropped, f"icon_{label_clean}")
+        jobs.append(
+            {
+                "id": box_id,
+                "label": label,
+                "label_clean": label_clean,
+                "x1": x1,
+                "y1": y1,
+                "x2": x2,
+                "y2": y2,
+                "width": x2 - x1,
+                "height": y2 - y1,
+                "crop_path": str(crop_path),
+                "cropped": cropped,
+            }
+        )
 
-        icon_infos.append({
-            "id": box_id,
-            "label": label,
-            "label_clean": label_clean,
-            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-            "width": x2 - x1, "height": y2 - y1,
-            "crop_path": str(crop_path),
-            "nobg_path": nobg_path,
-        })
+    icon_infos_by_id: dict[int, dict] = {}
+    if use_concurrency and len(jobs) > 1:
+        max_workers = max(1, min(int(rmbg_workers), len(jobs)))
+        print(f"并发去背景: workers={max_workers}, icons={len(jobs)}")
 
-        print(f"  {label}: 裁切并去背景完成 -> {nobg_path}")
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            fut_to_job = {
+                ex.submit(remover.remove_background, job["cropped"], f"icon_{job['label_clean']}"): job
+                for job in jobs
+            }
+            for fut in as_completed(fut_to_job):
+                job = fut_to_job[fut]
+                label = job["label"]
+                try:
+                    nobg_path = fut.result()
+                except Exception as e:
+                    raise Exception(f"{label}: remove-bg 失败: {e}") from e
+
+                info = {
+                    "id": job["id"],
+                    "label": label,
+                    "label_clean": job["label_clean"],
+                    "x1": job["x1"],
+                    "y1": job["y1"],
+                    "x2": job["x2"],
+                    "y2": job["y2"],
+                    "width": job["width"],
+                    "height": job["height"],
+                    "crop_path": job["crop_path"],
+                    "nobg_path": nobg_path,
+                }
+                icon_infos_by_id[job["id"]] = info
+                print(f"  {label}: 去背景完成 -> {nobg_path}")
+    else:
+        for job in jobs:
+            label = job["label"]
+            nobg_path = remover.remove_background(job["cropped"], f"icon_{job['label_clean']}")
+            info = {
+                "id": job["id"],
+                "label": label,
+                "label_clean": job["label_clean"],
+                "x1": job["x1"],
+                "y1": job["y1"],
+                "x2": job["x2"],
+                "y2": job["y2"],
+                "width": job["width"],
+                "height": job["height"],
+                "crop_path": job["crop_path"],
+                "nobg_path": nobg_path,
+            }
+            icon_infos_by_id[job["id"]] = info
+            print(f"  {label}: 去背景完成 -> {nobg_path}")
+
+    icon_infos = [icon_infos_by_id[job["id"]] for job in jobs if job["id"] in icon_infos_by_id]
 
     del remover
     if torch.cuda.is_available():
@@ -2367,6 +2615,9 @@ def method_to_svg(
         boxlib_path=boxlib_path,
         output_dir=str(output_dir),
         rmbg_model_path=rmbg_model_path,
+        api_key=api_key,
+        base_url=base_url,
+        provider=provider,
     )
 
     if stop_after == 3:
