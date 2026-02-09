@@ -1,0 +1,17 @@
+.git
+.idea
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+outputs
+uploads
+
+*.log
+*.png
+*.jpg
+*.jpeg
+*.webp
+

@@ -1,0 +1,13 @@
+# API-only runtime (no local ML models)
+fastapi>=0.110
+uvicorn>=0.24
+pydantic>=2.6
+python-multipart>=0.0.9
+
+requests>=2.31
+numpy>=1.26
+Pillow>=10.0
+openai>=1.0
+
+# Optional, but helps with SVG validation if present
+lxml>=4.9
