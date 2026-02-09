@@ -1,11 +1,4 @@
 (() => {
-  const page = document.body.dataset.page;
-  if (page === "input") {
-    initInputPage();
-  } else if (page === "canvas") {
-    initCanvasPage();
-  }
-
   function $(id) {
     return document.getElementById(id);
   }
@@ -13,11 +6,34 @@
   const STORAGE_KEYS = {
     apiKey: "autofigure.api_key",
     samApiKey: "autofigure.sam_api_key",
+    methodText: "autofigure.method_text",
   };
+
+  function storageAvailable(storage) {
+    try {
+      if (!storage) return false;
+      const k = "__autofigure_storage_test__";
+      storage.setItem(k, "1");
+      storage.removeItem(k);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function getBestStorage() {
+    // localStorage persists across restarts; sessionStorage survives reloads but not browser restarts.
+    if (storageAvailable(window.localStorage)) return window.localStorage;
+    if (storageAvailable(window.sessionStorage)) return window.sessionStorage;
+    return null;
+  }
+
+  const BEST_STORAGE = getBestStorage();
 
   function safeGet(key) {
     try {
-      return window.localStorage.getItem(key);
+      if (!BEST_STORAGE) return null;
+      return BEST_STORAGE.getItem(key);
     } catch (err) {
       return null;
     }
@@ -25,7 +41,8 @@
 
   function safeSet(key, value) {
     try {
-      window.localStorage.setItem(key, value);
+      if (!BEST_STORAGE) return;
+      BEST_STORAGE.setItem(key, value);
     } catch (err) {
       // ignore (e.g. storage disabled)
     }
@@ -33,7 +50,8 @@
 
   function safeRemove(key) {
     try {
-      window.localStorage.removeItem(key);
+      if (!BEST_STORAGE) return;
+      BEST_STORAGE.removeItem(key);
     } catch (err) {
       // ignore
     }
@@ -47,9 +65,15 @@
     const referencePreview = $("referencePreview");
     const referenceStatus = $("referenceStatus");
 
-    // Persist API keys across refreshes.
+    if (!BEST_STORAGE && errorMsg) {
+      errorMsg.textContent =
+        "Warning: browser storage is blocked, so API keys and Method Text cannot be saved across refresh.";
+    }
+
+    // Persist API keys and method text across refreshes.
     const apiKeyInput = $("apiKey");
     const samApiKeyInput = $("samApiKey");
+    const methodTextInput = $("methodText");
     const cachedApiKey = safeGet(STORAGE_KEYS.apiKey);
     if (apiKeyInput && !apiKeyInput.value && cachedApiKey) {
       apiKeyInput.value = cachedApiKey;
@@ -57,6 +81,11 @@
     const cachedSamApiKey = safeGet(STORAGE_KEYS.samApiKey);
     if (samApiKeyInput && !samApiKeyInput.value && cachedSamApiKey) {
       samApiKeyInput.value = cachedSamApiKey;
+    }
+
+    const cachedMethodText = safeGet(STORAGE_KEYS.methodText);
+    if (methodTextInput && !methodTextInput.value && cachedMethodText) {
+      methodTextInput.value = cachedMethodText;
     }
     if (apiKeyInput) {
       apiKeyInput.addEventListener("input", () => {
@@ -70,6 +99,13 @@
         const value = samApiKeyInput.value || "";
         if (value) safeSet(STORAGE_KEYS.samApiKey, value);
         else safeRemove(STORAGE_KEYS.samApiKey);
+      });
+    }
+    if (methodTextInput) {
+      methodTextInput.addEventListener("input", () => {
+        const value = methodTextInput.value || "";
+        if (value) safeSet(STORAGE_KEYS.methodText, value);
+        else safeRemove(STORAGE_KEYS.methodText);
       });
     }
 
@@ -116,6 +152,11 @@
         const value = samApiKeyInput.value || "";
         if (value) safeSet(STORAGE_KEYS.samApiKey, value);
         else safeRemove(STORAGE_KEYS.samApiKey);
+      }
+      if (methodTextInput) {
+        const value = methodTextInput.value || "";
+        if (value) safeSet(STORAGE_KEYS.methodText, value);
+        else safeRemove(STORAGE_KEYS.methodText);
       }
 
       confirmBtn.disabled = true;
@@ -416,5 +457,13 @@
       default:
         return "artifact";
     }
+  }
+
+  // Bootstrap after all helpers/constants are initialized (avoids TDZ issues).
+  const page = document.body.dataset.page;
+  if (page === "input") {
+    initInputPage();
+  } else if (page === "canvas") {
+    initCanvasPage();
   }
 })();
