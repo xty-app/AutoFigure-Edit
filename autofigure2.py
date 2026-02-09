@@ -79,10 +79,7 @@ from typing import Optional, List, Dict, Any, Literal
 
 import requests
 import numpy as np
-import torch
 from PIL import Image, ImageDraw, ImageFont
-from torchvision import transforms
-from transformers import AutoModelForImageSegmentation
 
 
 # ============================================================================
@@ -1130,6 +1127,7 @@ def segment_with_sam3(
         backend = "fal"
 
     if backend == "local":
+        import torch
         from sam3.model_builder import build_sam3_image_model
         from sam3.model.sam3_image_processor import Sam3Processor
         import sam3
@@ -1480,6 +1478,15 @@ class BriaRMBG2Remover:
     """使用 BRIA-RMBG 2.0 模型进行高质量背景抠图"""
 
     def __init__(self, model_path: Path | str | None = None, output_dir: Path | str | None = None):
+        # Lazy imports so API-only deployments (Docker) don't need torch/transformers.
+        import torch
+        from torchvision import transforms
+        from transformers import AutoModelForImageSegmentation
+
+        self._torch = torch
+        self._transforms = transforms
+        self._AutoModelForImageSegmentation = AutoModelForImageSegmentation
+
         self.model_path = Path(model_path) if model_path else None
         self.output_dir = Path(output_dir) if output_dir else Path("./output/icons")
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -1508,6 +1515,9 @@ class BriaRMBG2Remover:
         ])
 
     def remove_background(self, image: Image.Image, output_name: str) -> str:
+        torch = self._torch
+        transforms = self._transforms
+
         image_rgb = image.convert("RGB")
         input_tensor = self.transform_image(image_rgb).unsqueeze(0).to(self.device)
 
@@ -1575,6 +1585,9 @@ def crop_and_remove_background(
         )
         use_concurrency = True
 
+    # remove-bg has a hard minimum input size (e.g. 32x32). Smaller crops will be kept as-is.
+    MIN_RMBG_SIZE = 32
+
     jobs: list[dict] = []
     for box_info in boxes:
         box_id = box_info["id"]
@@ -1608,17 +1621,42 @@ def crop_and_remove_background(
         print(f"并发去背景: workers={max_workers}, icons={len(jobs)}")
 
         with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            fut_to_job = {
-                ex.submit(remover.remove_background, job["cropped"], f"icon_{job['label_clean']}"): job
-                for job in jobs
-            }
+            fut_to_job: dict[Any, dict] = {}
+            # Pre-filter small images: keep original crop, don't call API.
+            for job in jobs:
+                if job["width"] < MIN_RMBG_SIZE or job["height"] < MIN_RMBG_SIZE:
+                    label = job["label"]
+                    print(
+                        f"  {label}: 裁切块太小 ({job['width']}x{job['height']} < {MIN_RMBG_SIZE}), 跳过去背景"
+                    )
+                    info = {
+                        "id": job["id"],
+                        "label": label,
+                        "label_clean": job["label_clean"],
+                        "x1": job["x1"],
+                        "y1": job["y1"],
+                        "x2": job["x2"],
+                        "y2": job["y2"],
+                        "width": job["width"],
+                        "height": job["height"],
+                        "crop_path": job["crop_path"],
+                        "nobg_path": job["crop_path"],  # fallback: use original crop
+                    }
+                    icon_infos_by_id[job["id"]] = info
+                    continue
+
+                fut = ex.submit(remover.remove_background, job["cropped"], f"icon_{job['label_clean']}")
+                fut_to_job[fut] = job
+
             for fut in as_completed(fut_to_job):
                 job = fut_to_job[fut]
                 label = job["label"]
                 try:
                     nobg_path = fut.result()
                 except Exception as e:
-                    raise Exception(f"{label}: remove-bg 失败: {e}") from e
+                    # Don't fail the whole pipeline on a single icon.
+                    print(f"  警告: {label}: remove-bg 失败，使用原始裁切图。原因: {e}")
+                    nobg_path = job["crop_path"]
 
                 info = {
                     "id": job["id"],
@@ -1634,11 +1672,24 @@ def crop_and_remove_background(
                     "nobg_path": nobg_path,
                 }
                 icon_infos_by_id[job["id"]] = info
-                print(f"  {label}: 去背景完成 -> {nobg_path}")
+                if nobg_path == job["crop_path"]:
+                    print(f"  {label}: 跳过去背景 -> {nobg_path}")
+                else:
+                    print(f"  {label}: 去背景完成 -> {nobg_path}")
     else:
         for job in jobs:
             label = job["label"]
-            nobg_path = remover.remove_background(job["cropped"], f"icon_{job['label_clean']}")
+            if job["width"] < MIN_RMBG_SIZE or job["height"] < MIN_RMBG_SIZE:
+                print(
+                    f"  {label}: 裁切块太小 ({job['width']}x{job['height']} < {MIN_RMBG_SIZE}), 跳过去背景"
+                )
+                nobg_path = job["crop_path"]
+            else:
+                try:
+                    nobg_path = remover.remove_background(job["cropped"], f"icon_{job['label_clean']}")
+                except Exception as e:
+                    print(f"  警告: {label}: remove-bg 失败，使用原始裁切图。原因: {e}")
+                    nobg_path = job["crop_path"]
             info = {
                 "id": job["id"],
                 "label": label,
@@ -1653,13 +1704,20 @@ def crop_and_remove_background(
                 "nobg_path": nobg_path,
             }
             icon_infos_by_id[job["id"]] = info
-            print(f"  {label}: 去背景完成 -> {nobg_path}")
+            if nobg_path == job["crop_path"]:
+                print(f"  {label}: 跳过去背景 -> {nobg_path}")
+            else:
+                print(f"  {label}: 去背景完成 -> {nobg_path}")
 
     icon_infos = [icon_infos_by_id[job["id"]] for job in jobs if job["id"] in icon_infos_by_id]
 
     del remover
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    try:
+        import torch  # optional
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
     return icon_infos
 
