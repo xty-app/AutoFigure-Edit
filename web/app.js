@@ -10,6 +10,35 @@
     return document.getElementById(id);
   }
 
+  const STORAGE_KEYS = {
+    apiKey: "autofigure.api_key",
+    samApiKey: "autofigure.sam_api_key",
+  };
+
+  function safeGet(key) {
+    try {
+      return window.localStorage.getItem(key);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function safeSet(key, value) {
+    try {
+      window.localStorage.setItem(key, value);
+    } catch (err) {
+      // ignore (e.g. storage disabled)
+    }
+  }
+
+  function safeRemove(key) {
+    try {
+      window.localStorage.removeItem(key);
+    } catch (err) {
+      // ignore
+    }
+  }
+
   function initInputPage() {
     const confirmBtn = $("confirmBtn");
     const errorMsg = $("errorMsg");
@@ -17,6 +46,32 @@
     const referenceFile = $("referenceFile");
     const referencePreview = $("referencePreview");
     const referenceStatus = $("referenceStatus");
+
+    // Persist API keys across refreshes.
+    const apiKeyInput = $("apiKey");
+    const samApiKeyInput = $("samApiKey");
+    const cachedApiKey = safeGet(STORAGE_KEYS.apiKey);
+    if (apiKeyInput && !apiKeyInput.value && cachedApiKey) {
+      apiKeyInput.value = cachedApiKey;
+    }
+    const cachedSamApiKey = safeGet(STORAGE_KEYS.samApiKey);
+    if (samApiKeyInput && !samApiKeyInput.value && cachedSamApiKey) {
+      samApiKeyInput.value = cachedSamApiKey;
+    }
+    if (apiKeyInput) {
+      apiKeyInput.addEventListener("input", () => {
+        const value = apiKeyInput.value || "";
+        if (value) safeSet(STORAGE_KEYS.apiKey, value);
+        else safeRemove(STORAGE_KEYS.apiKey);
+      });
+    }
+    if (samApiKeyInput) {
+      samApiKeyInput.addEventListener("input", () => {
+        const value = samApiKeyInput.value || "";
+        if (value) safeSet(STORAGE_KEYS.samApiKey, value);
+        else safeRemove(STORAGE_KEYS.samApiKey);
+      });
+    }
 
     if (uploadZone && referenceFile) {
       uploadZone.addEventListener("click", () => referenceFile.click());
@@ -49,6 +104,18 @@
       if (!methodText) {
         errorMsg.textContent = "Please provide method text.";
         return;
+      }
+
+      // Ensure latest values are captured (in case the browser doesn't flush input events).
+      if (apiKeyInput) {
+        const value = apiKeyInput.value || "";
+        if (value) safeSet(STORAGE_KEYS.apiKey, value);
+        else safeRemove(STORAGE_KEYS.apiKey);
+      }
+      if (samApiKeyInput) {
+        const value = samApiKeyInput.value || "";
+        if (value) safeSet(STORAGE_KEYS.samApiKey, value);
+        else safeRemove(STORAGE_KEYS.samApiKey);
       }
 
       confirmBtn.disabled = true;
